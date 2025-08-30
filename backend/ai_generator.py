@@ -5,21 +5,41 @@ class AIGenerator:
     """Handles interactions with Anthropic's Claude API for generating responses"""
     
     # Static system prompt to avoid rebuilding on each call
-    SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to a comprehensive search tool for course information.
+    SYSTEM_PROMPT = """ You are an AI assistant specialized in course materials and educational content with access to comprehensive tools for course information.
 
-Search Tool Usage:
-- Use the search tool **only** for questions about specific course content or detailed educational materials
-- **One search per query maximum**
-- Synthesize search results into accurate, fact-based responses
-- If search yields no results, state this clearly without offering alternatives
+Available Tools:
+1. **search_course_content**: Search for specific content within courses (lectures, materials, etc.)
+2. **get_course_outline**: Get complete course structure with title, instructor, course link, and all lessons with their titles and links
+
+Tool Usage Guidelines:
+- **Sequential reasoning**: You can use multiple tool calls across up to 2 rounds to gather comprehensive information
+- **Course outline queries** (e.g., "What lessons are in X course?", "Show me the outline of Y"): Use get_course_outline
+- **Content-specific questions**: Use search_course_content for detailed educational materials
+- **Complex queries**: First use get_course_outline to understand structure, then search_course_content for specific details
+- **Follow-up searches**: After initial results, you can search for additional related content if needed
+- Synthesize all tool results into accurate, fact-based responses
+- If tools yield no results, state this clearly without offering alternatives
+
+Sequential Tool Strategy:
+- **Round 1**: Get course structure or initial content search
+- **Round 2**: Search for specific details, related topics, or complementary information
+- Use tool results from previous rounds to inform follow-up searches
+- Each round builds upon previous findings for comprehensive answers
 
 Response Protocol:
-- **General knowledge questions**: Answer using existing knowledge without searching
-- **Course-specific questions**: Search first, then answer
+- **General knowledge questions**: Answer using existing knowledge without using tools
+- **Course structure questions**: Use get_course_outline first, optionally follow with content search
+- **Course content questions**: Use search_course_content, optionally follow with related searches
+- **Complex questions**: Use multiple tool rounds to gather complete information
 - **No meta-commentary**:
- - Provide direct answers only — no reasoning process, search explanations, or question-type analysis
- - Do not mention "based on the search results"
+ - Provide direct answers only — no reasoning process, tool explanations, or question-type analysis
+ - Do not mention "based on the search results" or "using the outline tool"
 
+When providing course outlines, include:
+- Course title and instructor
+- Course link if available
+- Complete list of lessons with numbers and titles
+- Individual lesson links when available
 
 All responses must be:
 1. **Brief, Concise and focused** - Get to the point quickly
@@ -29,9 +49,10 @@ All responses must be:
 Provide only the direct answer to what was asked.
 """
     
-    def __init__(self, api_key: str, model: str):
+    def __init__(self, api_key: str, model: str, max_tool_rounds: int = 2):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = model
+        self.max_tool_rounds = max_tool_rounds
         
         # Pre-build base API parameters
         self.base_params = {
@@ -88,7 +109,7 @@ Provide only the direct answer to what was asked.
     
     def _handle_tool_execution(self, initial_response, base_params: Dict[str, Any], tool_manager):
         """
-        Handle execution of tool calls and get follow-up response.
+        Handle execution of tool calls with support for sequential tool rounds.
         
         Args:
             initial_response: The response containing tool use requests
@@ -100,36 +121,58 @@ Provide only the direct answer to what was asked.
         """
         # Start with existing messages
         messages = base_params["messages"].copy()
+        current_response = initial_response
         
-        # Add AI's tool use response
-        messages.append({"role": "assistant", "content": initial_response.content})
+        # Track rounds to prevent infinite loops
+        for round_num in range(self.max_tool_rounds):
+            # Add AI's response to conversation
+            messages.append({"role": "assistant", "content": current_response.content})
+            
+            # Execute all tool calls and collect results
+            tool_results = []
+            for content_block in current_response.content:
+                if content_block.type == "tool_use":
+                    try:
+                        tool_result = tool_manager.execute_tool(
+                            content_block.name, 
+                            **content_block.input
+                        )
+                        
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": content_block.id,
+                            "content": tool_result
+                        })
+                    except Exception as e:
+                        # Handle tool execution errors gracefully
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": content_block.id,
+                            "content": f"Tool execution error: {str(e)}"
+                        })
+            
+            # Add tool results if any were generated
+            if tool_results:
+                messages.append({"role": "user", "content": tool_results})
+            
+            # Prepare parameters for next API call
+            next_params = {
+                **self.base_params,
+                "messages": messages,
+                "system": base_params["system"]
+            }
+            
+            # Include tools for potential follow-up rounds (except last round)
+            if round_num < self.max_tool_rounds - 1 and "tools" in base_params:
+                next_params["tools"] = base_params["tools"]
+                next_params["tool_choice"] = {"type": "auto"}
+            
+            # Get response from Claude
+            current_response = self.client.messages.create(**next_params)
+            
+            # If no tool use in response, we're done
+            if current_response.stop_reason != "tool_use":
+                break
         
-        # Execute all tool calls and collect results
-        tool_results = []
-        for content_block in initial_response.content:
-            if content_block.type == "tool_use":
-                tool_result = tool_manager.execute_tool(
-                    content_block.name, 
-                    **content_block.input
-                )
-                
-                tool_results.append({
-                    "type": "tool_result",
-                    "tool_use_id": content_block.id,
-                    "content": tool_result
-                })
-        
-        # Add tool results as single message
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
-        
-        # Prepare final API call without tools
-        final_params = {
-            **self.base_params,
-            "messages": messages,
-            "system": base_params["system"]
-        }
-        
-        # Get final response
-        final_response = self.client.messages.create(**final_params)
-        return final_response.content[0].text
+        # Return final response text
+        return current_response.content[0].text
