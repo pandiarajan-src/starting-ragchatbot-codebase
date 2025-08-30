@@ -34,6 +34,22 @@ uv sync
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
+### Code Quality
+```bash
+# Format code automatically (isort + black)
+chmod +x scripts/format.sh && ./scripts/format.sh
+
+# Check code quality without changes (isort + black + flake8)
+chmod +x scripts/quality.sh && ./scripts/quality.sh
+
+# Individual commands
+uv run isort .              # Sort imports
+uv run black .              # Format code
+uv run flake8 .             # Lint code
+uv run isort . --check-only # Check import sorting
+uv run black . --check     # Check formatting
+```
+
 ### Environment Setup
 Required `.env` file in root directory:
 ```
