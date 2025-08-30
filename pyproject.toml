@@ -16,6 +16,7 @@ dependencies = [
     "black>=24.0.0",
     "flake8>=7.0.0",
     "isort>=5.13.0",
+    "httpx>=0.24.0",
 ]
 
 [tool.black]
@@ -57,4 +58,22 @@ exclude = [
     ".env",
     "venv",
     "env"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "--disable-warnings",
+]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests", 
+    "api: API endpoint tests",
+    "slow: Slow running tests",
 ]
